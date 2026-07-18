@@ -1,0 +1,58 @@
+name: Sync Gist to SQLite
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch Gist and detect changes
+        id: detect
+        run: |
+          GIST_URL="https://gist.githubusercontent.com/HDR/0659d1717bc61504bf83750628963f4f/raw/Forza%2520Horizon%25206%2520Car%2520Ordinals.json"
+          
+          curl -sS "$GIST_URL" -o latest.json
+          
+          if [ -f mapping.json ] && cmp -s latest.json mapping.json; then
+            echo "No changes detected in the Gist."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Changes detected or file is missing. Updating."
+            mv latest.json mapping.json
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Convert JSON to SQLite
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          python3 -c "
+          import json, sqlite3
+          
+          with open('mapping.json', 'r') as f:
+              data = json.load(f)
+              
+          conn = sqlite3.connect('mappings.db')
+          c = conn.cursor()
+          c.execute('DROP TABLE IF EXISTS mapping')
+          c.execute('CREATE TABLE mapping (id INTEGER PRIMARY KEY, name TEXT)')
+          rows = [(int(uid), name) for name, uid in data.items()]
+          c.executemany('INSERT INTO mapping (id, name) VALUES (?, ?)', rows)
+          conn.commit()
+          conn.close()
+          "
+
+      - name: Commit and push changes
+        if: steps.detect.outputs.changed == 'true'
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update sqlite db from gist"
+          file_pattern: "mapping.json mappings.db"
